@@ -1,6 +1,7 @@
 //! Tools for demangling symbols using
 //! [Rust v0 syntax](https://rust-lang.github.io/rfcs/2603-rust-symbol-name-mangling-v0.html#syntax-of-mangled-names).
 
+pub use self::display::DemangleWrite;
 pub use self::display::Style as DisplayStyle;
 use std::borrow::Cow;
 use std::fmt::{self, Debug, Display, Formatter, Write};
@@ -140,7 +141,11 @@ impl Path<'_> {
     /// Returns an object that implements [`Display`] for printing the path.
     #[must_use]
     pub fn display(&self, style: DisplayStyle) -> impl Display + '_ {
-        display::display_fn(move |f| display::write_path(self, f, style, 0, false))
+        display::display_fn(move |f| self.structured_demangle(f, style))
+    }
+
+    pub fn structured_demangle(&self, out: &mut dyn DemangleWrite, style: DisplayStyle) -> fmt::Result {
+        display::write_path(self, out, style, 0, false)
     }
 }
 
