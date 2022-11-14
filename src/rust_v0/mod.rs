@@ -24,7 +24,7 @@ impl<'a> Symbol<'a> {
     /// Returns an object that implements [`Display`] for printing the symbol.
     #[must_use]
     pub fn display(&self, style: DisplayStyle) -> impl Display + '_ {
-        display::display_path(&self.path, style, 0, true)
+        display::display_fn(move |f| display::write_path(&self.path, f, style, 0, true))
     }
 
     /// Parses `input` with Rust
@@ -140,7 +140,7 @@ impl Path<'_> {
     /// Returns an object that implements [`Display`] for printing the path.
     #[must_use]
     pub fn display(&self, style: DisplayStyle) -> impl Display + '_ {
-        display::display_path(self, style, 0, false)
+        display::display_fn(move |f| display::write_path(self, f, style, 0, false))
     }
 }
 
@@ -192,7 +192,7 @@ impl GenericArg<'_> {
     /// Returns an object that implements [`Display`] for printing the generic argument.
     #[must_use]
     pub fn display(&self, style: DisplayStyle) -> impl Display + '_ {
-        display::display_generic_arg(self, style, 0)
+        display::display_fn(move |f| display::write_generic_arg(self, f, style, 0))
     }
 }
 
@@ -226,7 +226,7 @@ impl Type<'_> {
     /// Returns an object that implements [`Display`] for printing the type.
     #[must_use]
     pub fn display(&self, style: DisplayStyle) -> impl Display + '_ {
-        display::display_type(self, style, 0)
+        display::display_fn(move |f| display::write_type(self, f, style, 0))
     }
 }
 
@@ -270,7 +270,7 @@ impl BasicType {
     /// Returns an object that implements [`Display`] for printing the basic type.
     #[must_use]
     pub fn display(self) -> impl Display {
-        display::display_basic_type(self)
+        display::display_fn(move |f| display::write_basic_type(self, f))
     }
 }
 
@@ -293,7 +293,7 @@ impl FnSig<'_> {
     /// Returns an object that implements [`Display`] for printing the function signature.
     #[must_use]
     pub fn display(&self, style: DisplayStyle) -> impl Display + '_ {
-        display::display_fn_sig(self, style, 0)
+        display::display_fn(move |f| display::write_fn_sig(self, f, style, 0))
     }
 }
 
@@ -371,7 +371,7 @@ impl Const<'_> {
     /// Returns an object that implements [`Display`] for printing the constant value.
     #[must_use]
     pub fn display(&self, style: DisplayStyle) -> impl Display + '_ {
-        display::display_const(self, style, 0, true)
+        display::display_fn(move |f| display::write_const(self, f, style, 0, true))
     }
 }
 

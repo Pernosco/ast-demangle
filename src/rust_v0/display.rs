@@ -3,9 +3,7 @@
 use crate::rust_v0::{
     Abi, BasicType, Const, ConstFields, DynBounds, DynTrait, DynTraitAssocBinding, FnSig, GenericArg, Path, Type,
 };
-use std::any;
-use std::cell::Cell;
-use std::fmt::{self, Display, Formatter, Write};
+use std::{any, fmt};
 
 /// Denote the style for displaying the symbol.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -19,11 +17,46 @@ pub enum Style {
     Long,
 }
 
-fn display_fn(f: impl Fn(&mut Formatter) -> fmt::Result) -> impl Display {
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum DemangleNodeType {
+    /// Additional values may be added in the future. Use a
+    /// _ pattern for compatibility.
+    __NonExhaustive,
+}
+
+/// Sink for demanged text that reports syntactic structure.
+pub trait DemangleWrite {
+    /// Called when we are entering the scope of some AST node.
+    fn push_demangle_node(&mut self, _: DemangleNodeType) {}
+    /// Same as `fmt::Write::write_str`.
+    fn write_str(&mut self, s: &str) -> fmt::Result;
+    /// Same as `fmt::write::write_fmt`.
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
+        if let Some(s) = args.as_str() {
+            self.write_str(s)
+        } else {
+            self.write_str(&args.to_string())
+        }
+    }
+    /// Called when we are exiting the scope of some AST node for
+    /// which `push_demangle_node` was called.
+    fn pop_demangle_node(&mut self) {}
+}
+
+impl<W: fmt::Write> DemangleWrite for W {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        fmt::Write::write_str(self, s)
+    }
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
+        fmt::Write::write_fmt(self, args)
+    }
+}
+
+pub fn display_fn(f: impl Fn(&mut fmt::Formatter) -> fmt::Result) -> impl fmt::Display {
     struct Wrapper<F>(F);
 
-    impl<F: Fn(&mut Formatter) -> fmt::Result> Display for Wrapper<F> {
-        fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+    impl<F: Fn(&mut fmt::Formatter) -> fmt::Result> fmt::Display for Wrapper<F> {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             self.0(f)
         }
     }
@@ -31,43 +64,51 @@ fn display_fn(f: impl Fn(&mut Formatter) -> fmt::Result) -> impl Display {
     Wrapper(f)
 }
 
-fn display_separated_list(values: impl IntoIterator<Item = impl Display>, separator: impl Display) -> impl Display {
-    let values = Cell::new(Some(values));
+fn write_separated_list<T>(
+    values: impl IntoIterator<Item = T>,
+    out: &mut dyn DemangleWrite,
+    mut f: impl FnMut(T, &mut dyn DemangleWrite) -> fmt::Result,
+    separator: &str,
+) -> fmt::Result {
+    let mut iter = values.into_iter();
 
-    display_fn(move |f| {
-        let mut iter = values.take().unwrap().into_iter();
+    if let Some(first) = iter.next() {
+        f(first, out)?;
 
-        if let Some(first) = iter.next() {
-            first.fmt(f)?;
-
-            for value in iter {
-                separator.fmt(f)?;
-                value.fmt(f)?;
-            }
+        for value in iter {
+            out.write_str(separator)?;
+            f(value, out)?;
         }
+    }
 
-        Ok(())
-    })
+    Ok(())
 }
 
-pub fn display_path<'a>(path: &'a Path, style: Style, bound_lifetime_depth: u64, in_value: bool) -> impl Display + 'a {
-    display_fn(move |f| match path {
+pub fn write_path(
+    path: &Path,
+    out: &mut dyn DemangleWrite,
+    style: Style,
+    bound_lifetime_depth: u64,
+    in_value: bool,
+) -> fmt::Result {
+    match path {
         Path::CrateRoot(identifier) => match style {
-            Style::Short | Style::Normal => f.write_str(&identifier.name),
+            Style::Short | Style::Normal => out.write_str(&identifier.name),
             Style::Long => {
-                write!(f, "{}[{:x}]", identifier.name, identifier.disambiguator)
+                write!(out, "{}[{:x}]", identifier.name, identifier.disambiguator)
             }
         },
         Path::InherentImpl { type_, .. } => {
-            write!(f, "<{}>", display_type(type_, style, bound_lifetime_depth))
+            out.write_str("<")?;
+            write_type(type_, out, style, bound_lifetime_depth)?;
+            out.write_str(">")
         }
         Path::TraitImpl { type_, trait_, .. } | Path::TraitDefinition { type_, trait_ } => {
-            write!(
-                f,
-                "<{} as {}>",
-                display_type(type_, style, bound_lifetime_depth),
-                display_path(trait_, style, bound_lifetime_depth, false)
-            )
+            out.write_str("<")?;
+            write_type(type_, out, style, bound_lifetime_depth)?;
+            out.write_str(" as ")?;
+            write_path(trait_, out, style, bound_lifetime_depth, false)?;
+            out.write_str(">")
         }
         Path::Nested {
             namespace,
@@ -75,21 +116,21 @@ pub fn display_path<'a>(path: &'a Path, style: Style, bound_lifetime_depth: u64,
             identifier,
         } => match namespace {
             b'A'..=b'Z' => {
-                display_path(path, style, bound_lifetime_depth, in_value).fmt(f)?;
+                write_path(path, out, style, bound_lifetime_depth, in_value)?;
 
-                f.write_str("::{")?;
+                out.write_str("::{")?;
 
                 match namespace {
-                    b'C' => f.write_str("closure")?,
-                    b'S' => f.write_str("shim")?,
-                    _ => f.write_char(char::from(*namespace))?,
+                    b'C' => out.write_str("closure")?,
+                    b'S' => out.write_str("shim")?,
+                    _ => write!(out, "{}", char::from(*namespace))?,
                 }
 
                 if !identifier.name.is_empty() {
-                    write!(f, ":{}", identifier.name)?;
+                    write!(out, ":{}", identifier.name)?;
                 }
 
-                write!(f, "#{}}}", identifier.disambiguator)
+                write!(out, "#{}}}", identifier.disambiguator)
             }
             b'a'..=b'z' => {
                 if matches!(style, Style::Normal | Style::Long)
@@ -101,475 +142,469 @@ pub fn display_path<'a>(path: &'a Path, style: Style, bound_lifetime_depth: u64,
                             | Path::Generic { .. }
                     )
                 {
-                    display_path(path, style, bound_lifetime_depth, in_value).fmt(f)?;
+                    write_path(path, out, style, bound_lifetime_depth, in_value)?;
 
                     if identifier.name.is_empty() {
                         Ok(())
                     } else {
-                        write!(f, "::{}", identifier.name)
+                        write!(out, "::{}", identifier.name)
                     }
                 } else if identifier.name.is_empty() {
-                    display_path(path, style, bound_lifetime_depth, in_value).fmt(f)
+                    write_path(path, out, style, bound_lifetime_depth, in_value)
                 } else {
-                    write!(f, "{}", identifier.name)
+                    write!(out, "{}", identifier.name)
                 }
             }
             _ => Err(fmt::Error),
         },
         Path::Generic { path, generic_args } => {
-            display_path(path, style, bound_lifetime_depth, in_value).fmt(f)?;
+            write_path(path, out, style, bound_lifetime_depth, in_value)?;
 
             if in_value {
-                f.write_str("::")?;
+                out.write_str("::")?;
             }
 
-            write!(
-                f,
-                "<{}>",
-                display_separated_list(
-                    generic_args.iter().map(|generic_arg| display_generic_arg(
-                        generic_arg,
-                        style,
-                        bound_lifetime_depth,
-                    )),
-                    ", "
-                )
-            )
+            out.write_str("<")?;
+            write_separated_list(
+                generic_args,
+                out,
+                |generic_arg, out| write_generic_arg(generic_arg, out, style, bound_lifetime_depth),
+                ", ",
+            )?;
+            out.write_str(">")
         }
-    })
+    }
 }
 
-fn display_lifetime(lifetime: u64, bound_lifetime_depth: u64) -> impl Display {
-    display_fn(move |f| {
-        f.write_char('\'')?;
+fn write_lifetime(lifetime: u64, out: &mut dyn DemangleWrite, bound_lifetime_depth: u64) -> fmt::Result {
+    out.write_str("'")?;
 
-        if lifetime == 0 {
-            f.write_char('_')
-        } else if let Some(depth) = bound_lifetime_depth.checked_sub(lifetime) {
-            if depth < 26 {
-                f.write_char(char::from(b'a' + u8::try_from(depth).unwrap()))
-            } else {
-                write!(f, "_{}", depth)
-            }
+    if lifetime == 0 {
+        out.write_str("_")
+    } else if let Some(depth) = bound_lifetime_depth.checked_sub(lifetime) {
+        if depth < 26 {
+            write!(out, "{}", char::from(b'a' + u8::try_from(depth).unwrap()))
         } else {
-            Err(fmt::Error)
+            write!(out, "_{}", depth)
         }
-    })
+    } else {
+        Err(fmt::Error)
+    }
 }
 
-pub fn display_generic_arg<'a>(
-    generic_arg: &'a GenericArg,
+pub fn write_generic_arg(
+    generic_arg: &GenericArg,
+    out: &mut dyn DemangleWrite,
     style: Style,
     bound_lifetime_depth: u64,
-) -> impl Display + 'a {
-    display_fn(move |f| match generic_arg {
-        GenericArg::Lifetime(lifetime) => display_lifetime(*lifetime, bound_lifetime_depth).fmt(f),
-        GenericArg::Type(type_) => display_type(type_, style, bound_lifetime_depth).fmt(f),
-        GenericArg::Const(const_) => display_const(const_, style, bound_lifetime_depth, false).fmt(f),
-    })
+) -> fmt::Result {
+    match generic_arg {
+        GenericArg::Lifetime(lifetime) => write_lifetime(*lifetime, out, bound_lifetime_depth),
+        GenericArg::Type(type_) => write_type(type_, out, style, bound_lifetime_depth),
+        GenericArg::Const(const_) => write_const(const_, out, style, bound_lifetime_depth, false),
+    }
 }
 
-fn display_binder(bound_lifetimes: u64, bound_lifetime_depth: u64) -> impl Display {
-    display_fn(move |f| {
-        write!(
-            f,
-            "for<{}>",
-            display_separated_list(
-                (1..=bound_lifetimes)
-                    .rev()
-                    .map(|i| display_lifetime(i, bound_lifetime_depth + bound_lifetimes)),
-                ", "
-            )
-        )
-    })
+fn write_binder(bound_lifetimes: u64, out: &mut dyn DemangleWrite, bound_lifetime_depth: u64) -> fmt::Result {
+    out.write_str("for<")?;
+    write_separated_list(
+        (1..=bound_lifetimes).rev(),
+        out,
+        |i, out| write_lifetime(i, out, bound_lifetime_depth + bound_lifetimes),
+        ", ",
+    )?;
+    out.write_str(">")
 }
 
-pub fn display_type<'a>(type_: &'a Type, style: Style, bound_lifetime_depth: u64) -> impl Display + 'a {
-    display_fn(move |f| match type_ {
-        Type::Basic(basic_type) => display_basic_type(*basic_type).fmt(f),
-        Type::Named(path) => display_path(path, style, bound_lifetime_depth, false).fmt(f),
+pub fn write_type(type_: &Type, out: &mut dyn DemangleWrite, style: Style, bound_lifetime_depth: u64) -> fmt::Result {
+    match type_ {
+        Type::Basic(basic_type) => write_basic_type(*basic_type, out),
+        Type::Named(path) => write_path(path, out, style, bound_lifetime_depth, false),
         Type::Array(type_, length) => {
-            write!(
-                f,
-                "[{}; {}]",
-                display_type(type_, style, bound_lifetime_depth),
-                display_const(length, style, bound_lifetime_depth, true)
-            )
+            out.write_str("[")?;
+            write_type(type_, out, style, bound_lifetime_depth)?;
+            out.write_str("; ")?;
+            write_const(length, out, style, bound_lifetime_depth, true)?;
+            out.write_str("]")
         }
         Type::Slice(type_) => {
-            write!(f, "[{}]", display_type(type_, style, bound_lifetime_depth))
+            out.write_str("[")?;
+            write_type(type_, out, style, bound_lifetime_depth)?;
+            out.write_str("]")
         }
         Type::Tuple(tuple_types) => {
-            write!(
-                f,
-                "({}",
-                display_separated_list(
-                    tuple_types
-                        .iter()
-                        .map(|type_| { display_type(type_, style, bound_lifetime_depth) }),
-                    ", "
-                )
+            out.write_str("(")?;
+            write_separated_list(
+                tuple_types,
+                out,
+                |type_, out| write_type(type_, out, style, bound_lifetime_depth),
+                ", ",
             )?;
 
             if tuple_types.len() == 1 {
-                f.write_char(',')?;
+                out.write_str(",")?;
             }
 
-            f.write_char(')')
+            out.write_str(")")
         }
         Type::Ref { lifetime, type_ } => {
-            f.write_char('&')?;
+            out.write_str("&")?;
 
             if *lifetime != 0 {
-                write!(f, "{} ", display_lifetime(*lifetime, bound_lifetime_depth))?;
+                write_lifetime(*lifetime, out, bound_lifetime_depth)?;
+                out.write_str(" ")?;
             }
 
-            display_type(type_, style, bound_lifetime_depth).fmt(f)
+            write_type(type_, out, style, bound_lifetime_depth)
         }
         Type::RefMut { lifetime, type_ } => {
-            f.write_char('&')?;
+            out.write_str("&")?;
 
             if *lifetime != 0 {
-                write!(f, "{} ", display_lifetime(*lifetime, bound_lifetime_depth))?;
+                write_lifetime(*lifetime, out, bound_lifetime_depth)?;
+                out.write_str(" ")?;
             }
 
-            write!(f, "mut {}", display_type(type_, style, bound_lifetime_depth))
+            out.write_str("mut ")?;
+            write_type(type_, out, style, bound_lifetime_depth)
         }
         Type::PtrConst(type_) => {
-            write!(f, "*const {}", display_type(type_, style, bound_lifetime_depth))
+            out.write_str("*const ")?;
+            write_type(type_, out, style, bound_lifetime_depth)
         }
         Type::PtrMut(type_) => {
-            write!(f, "*mut {}", display_type(type_, style, bound_lifetime_depth))
+            out.write_str("*mut ")?;
+            write_type(type_, out, style, bound_lifetime_depth)
         }
-        Type::Fn(fn_sig) => display_fn_sig(fn_sig, style, bound_lifetime_depth).fmt(f),
+        Type::Fn(fn_sig) => write_fn_sig(fn_sig, out, style, bound_lifetime_depth),
         Type::DynTrait { dyn_bounds, lifetime } => {
-            display_dyn_bounds(dyn_bounds, style, bound_lifetime_depth).fmt(f)?;
+            write_dyn_bounds(dyn_bounds, out, style, bound_lifetime_depth)?;
 
             if *lifetime == 0 {
                 Ok(())
             } else {
-                write!(f, " + {}", display_lifetime(*lifetime, bound_lifetime_depth))
+                out.write_str(" + ")?;
+                write_lifetime(*lifetime, out, bound_lifetime_depth)
             }
         }
+    }
+}
+
+pub fn write_basic_type(basic_type: BasicType, out: &mut dyn DemangleWrite) -> fmt::Result {
+    out.write_str(match basic_type {
+        BasicType::I8 => "i8",
+        BasicType::Bool => "bool",
+        BasicType::Char => "char",
+        BasicType::F64 => "f64",
+        BasicType::Str => "str",
+        BasicType::F32 => "f32",
+        BasicType::U8 => "u8",
+        BasicType::Isize => "isize",
+        BasicType::Usize => "usize",
+        BasicType::I32 => "i32",
+        BasicType::U32 => "u32",
+        BasicType::I128 => "i128",
+        BasicType::U128 => "u128",
+        BasicType::I16 => "i16",
+        BasicType::U16 => "u16",
+        BasicType::Unit => "()",
+        BasicType::Ellipsis => "...",
+        BasicType::I64 => "i64",
+        BasicType::U64 => "u64",
+        BasicType::Never => "!",
+        BasicType::Placeholder => "_",
     })
 }
 
-pub fn display_basic_type(basic_type: BasicType) -> impl Display {
-    display_fn(move |f| {
-        f.write_str(match basic_type {
-            BasicType::I8 => "i8",
-            BasicType::Bool => "bool",
-            BasicType::Char => "char",
-            BasicType::F64 => "f64",
-            BasicType::Str => "str",
-            BasicType::F32 => "f32",
-            BasicType::U8 => "u8",
-            BasicType::Isize => "isize",
-            BasicType::Usize => "usize",
-            BasicType::I32 => "i32",
-            BasicType::U32 => "u32",
-            BasicType::I128 => "i128",
-            BasicType::U128 => "u128",
-            BasicType::I16 => "i16",
-            BasicType::U16 => "u16",
-            BasicType::Unit => "()",
-            BasicType::Ellipsis => "...",
-            BasicType::I64 => "i64",
-            BasicType::U64 => "u64",
-            BasicType::Never => "!",
-            BasicType::Placeholder => "_",
-        })
-    })
-}
-
-pub fn display_fn_sig<'a>(fn_sig: &'a FnSig, style: Style, bound_lifetime_depth: u64) -> impl Display + 'a {
-    display_fn(move |f| {
-        if fn_sig.bound_lifetimes != 0 {
-            write!(f, "{} ", display_binder(fn_sig.bound_lifetimes, bound_lifetime_depth))?;
-        }
-
-        let bound_lifetime_depth = bound_lifetime_depth + fn_sig.bound_lifetimes;
-
-        if fn_sig.is_unsafe {
-            f.write_str("unsafe ")?;
-        }
-
-        if let Some(abi) = &fn_sig.abi {
-            write!(f, "extern {} ", display_abi(abi))?;
-        }
-
-        write!(
-            f,
-            "fn({})",
-            display_separated_list(
-                fn_sig
-                    .argument_types
-                    .iter()
-                    .map(|type_| { display_type(type_, style, bound_lifetime_depth) }),
-                ", "
-            )
-        )?;
-
-        if let Type::Basic(BasicType::Unit) = fn_sig.return_type.as_ref() {
-            Ok(())
-        } else {
-            write!(
-                f,
-                " -> {}",
-                display_type(&fn_sig.return_type, style, bound_lifetime_depth)
-            )
-        }
-    })
-}
-
-fn display_abi<'a>(abi: &'a Abi) -> impl Display + 'a {
-    display_fn(move |f| {
-        f.write_char('"')?;
-
-        match abi {
-            Abi::C => f.write_char('C')?,
-            Abi::Named(name) => {
-                let mut iter = name.split('_');
-
-                f.write_str(iter.next().unwrap())?;
-
-                for item in iter {
-                    write!(f, "-{}", item)?;
-                }
-            }
-        }
-
-        f.write_char('"')
-    })
-}
-
-fn display_dyn_bounds<'a>(dyn_bounds: &'a DynBounds, style: Style, bound_lifetime_depth: u64) -> impl Display + 'a {
-    display_fn(move |f| {
-        f.write_str("dyn ")?;
-
-        if dyn_bounds.bound_lifetimes != 0 {
-            write!(
-                f,
-                "{} ",
-                display_binder(dyn_bounds.bound_lifetimes, bound_lifetime_depth)
-            )?;
-        }
-
-        let bound_lifetime_depth = bound_lifetime_depth + dyn_bounds.bound_lifetimes;
-
-        display_separated_list(
-            dyn_bounds
-                .dyn_traits
-                .iter()
-                .map(move |dyn_trait| display_dyn_trait(dyn_trait, style, bound_lifetime_depth)),
-            " + ",
-        )
-        .fmt(f)
-    })
-}
-
-fn display_dyn_trait<'a>(dyn_trait: &'a DynTrait, style: Style, bound_lifetime_depth: u64) -> impl Display + 'a {
-    display_fn(move |f| {
-        if dyn_trait.dyn_trait_assoc_bindings.is_empty() {
-            display_path(&dyn_trait.path, style, bound_lifetime_depth, false).fmt(f)
-        } else if let Path::Generic { path, generic_args } = dyn_trait.path.as_ref() {
-            write!(
-                f,
-                "{}<{}>",
-                display_path(path, style, bound_lifetime_depth, false),
-                display_separated_list(
-                    generic_args
-                        .iter()
-                        .map(Ok)
-                        .chain(dyn_trait.dyn_trait_assoc_bindings.iter().map(Err))
-                        .map(|value| {
-                            display_fn(move |f| match value {
-                                Ok(generic_arg) => display_generic_arg(generic_arg, style, bound_lifetime_depth).fmt(f),
-                                Err(dyn_trait_assoc_binding) => display_dyn_trait_assoc_binding(
-                                    dyn_trait_assoc_binding,
-                                    style,
-                                    bound_lifetime_depth,
-                                )
-                                .fmt(f),
-                            })
-                        }),
-                    ", "
-                )
-            )
-        } else {
-            write!(
-                f,
-                "{}<{}>",
-                display_path(&dyn_trait.path, style, bound_lifetime_depth, false),
-                display_separated_list(
-                    dyn_trait
-                        .dyn_trait_assoc_bindings
-                        .iter()
-                        .map(|dyn_trait_assoc_binding| {
-                            display_dyn_trait_assoc_binding(dyn_trait_assoc_binding, style, bound_lifetime_depth)
-                        }),
-                    ", "
-                )
-            )
-        }
-    })
-}
-
-fn display_dyn_trait_assoc_binding<'a>(
-    dyn_trait_assoc_binding: &'a DynTraitAssocBinding,
+pub fn write_fn_sig(
+    fn_sig: &FnSig,
+    out: &mut dyn DemangleWrite,
     style: Style,
     bound_lifetime_depth: u64,
-) -> impl Display + 'a {
-    display_fn(move |f| {
-        write!(
-            f,
-            "{} = {}",
-            dyn_trait_assoc_binding.name,
-            display_type(&dyn_trait_assoc_binding.type_, style, bound_lifetime_depth)
-        )
-    })
+) -> fmt::Result {
+    if fn_sig.bound_lifetimes != 0 {
+        write_binder(fn_sig.bound_lifetimes, out, bound_lifetime_depth)?;
+        out.write_str(" ")?;
+    }
+
+    let bound_lifetime_depth = bound_lifetime_depth + fn_sig.bound_lifetimes;
+
+    if fn_sig.is_unsafe {
+        out.write_str("unsafe ")?;
+    }
+
+    if let Some(abi) = &fn_sig.abi {
+        out.write_str("extern ")?;
+        write_abi(abi, out)?;
+        out.write_str(" ")?;
+    }
+
+    out.write_str("fn(")?;
+    write_separated_list(
+        &fn_sig.argument_types,
+        out,
+        |type_, out| write_type(type_, out, style, bound_lifetime_depth),
+        ", ",
+    )?;
+    out.write_str(")")?;
+
+    if let Type::Basic(BasicType::Unit) = fn_sig.return_type.as_ref() {
+        Ok(())
+    } else {
+        out.write_str(" -> ")?;
+        write_type(&fn_sig.return_type, out, style, bound_lifetime_depth)
+    }
 }
 
-fn write_integer<T: Display>(f: &mut Formatter, value: T, style: Style) -> fmt::Result {
-    write!(f, "{}", value)?;
+fn write_abi(abi: &Abi, out: &mut dyn DemangleWrite) -> fmt::Result {
+    out.write_str("\"")?;
+
+    match abi {
+        Abi::C => out.write_str("C")?,
+        Abi::Named(name) => {
+            let mut iter = name.split('_');
+
+            out.write_str(iter.next().unwrap())?;
+
+            for item in iter {
+                write!(out, "-{}", item)?;
+            }
+        }
+    }
+
+    out.write_str("\"")
+}
+
+fn write_dyn_bounds(
+    dyn_bounds: &DynBounds,
+    out: &mut dyn DemangleWrite,
+    style: Style,
+    bound_lifetime_depth: u64,
+) -> fmt::Result {
+    out.write_str("dyn ")?;
+
+    if dyn_bounds.bound_lifetimes != 0 {
+        write_binder(dyn_bounds.bound_lifetimes, out, bound_lifetime_depth)?;
+        out.write_str(" ")?;
+    }
+
+    let bound_lifetime_depth = bound_lifetime_depth + dyn_bounds.bound_lifetimes;
+
+    write_separated_list(
+        dyn_bounds.dyn_traits.iter(),
+        out,
+        |dyn_trait, out| write_dyn_trait(dyn_trait, out, style, bound_lifetime_depth),
+        " + ",
+    )
+}
+
+fn write_dyn_trait(
+    dyn_trait: &DynTrait,
+    out: &mut dyn DemangleWrite,
+    style: Style,
+    bound_lifetime_depth: u64,
+) -> fmt::Result {
+    if dyn_trait.dyn_trait_assoc_bindings.is_empty() {
+        write_path(&dyn_trait.path, out, style, bound_lifetime_depth, false)
+    } else if let Path::Generic { path, generic_args } = dyn_trait.path.as_ref() {
+        write_path(path, out, style, bound_lifetime_depth, false)?;
+        write!(out, "<")?;
+        write_separated_list(
+            generic_args
+                .iter()
+                .map(Ok)
+                .chain(dyn_trait.dyn_trait_assoc_bindings.iter().map(Err)),
+            out,
+            |value, out| match value {
+                Ok(generic_arg) => write_generic_arg(generic_arg, out, style, bound_lifetime_depth),
+                Err(dyn_trait_assoc_binding) => {
+                    write_dyn_trait_assoc_binding(dyn_trait_assoc_binding, out, style, bound_lifetime_depth)
+                }
+            },
+            ", ",
+        )?;
+        write!(out, ">")
+    } else {
+        write_path(&dyn_trait.path, out, style, bound_lifetime_depth, false)?;
+        write!(out, "<")?;
+        write_separated_list(
+            dyn_trait.dyn_trait_assoc_bindings.iter(),
+            out,
+            |dyn_trait_assoc_binding, out| {
+                write_dyn_trait_assoc_binding(dyn_trait_assoc_binding, out, style, bound_lifetime_depth)
+            },
+            ", ",
+        )?;
+        write!(out, ">")
+    }
+}
+
+fn write_dyn_trait_assoc_binding(
+    dyn_trait_assoc_binding: &DynTraitAssocBinding,
+    out: &mut dyn DemangleWrite,
+    style: Style,
+    bound_lifetime_depth: u64,
+) -> fmt::Result {
+    write!(out, "{} = ", dyn_trait_assoc_binding.name)?;
+    write_type(&dyn_trait_assoc_binding.type_, out, style, bound_lifetime_depth)
+}
+
+fn write_integer<T: fmt::Display>(value: T, out: &mut dyn DemangleWrite, style: Style) -> fmt::Result {
+    write!(out, "{}", value)?;
 
     if matches!(style, Style::Long) {
-        f.write_str(any::type_name::<T>())
+        out.write_str(any::type_name::<T>())
     } else {
         Ok(())
     }
 }
 
-pub fn display_const<'a>(
-    const_: &'a Const,
+pub fn write_const(
+    const_: &Const,
+    out: &mut dyn DemangleWrite,
     style: Style,
     bound_lifetime_depth: u64,
     in_value: bool,
-) -> impl Display + 'a {
-    display_fn(move |f| match *const_ {
-        Const::I8(value) => write_integer(f, value, style),
-        Const::U8(value) => write_integer(f, value, style),
-        Const::Isize(value) => write_integer(f, value, style),
-        Const::Usize(value) => write_integer(f, value, style),
-        Const::I32(value) => write_integer(f, value, style),
-        Const::U32(value) => write_integer(f, value, style),
-        Const::I128(value) => write_integer(f, value, style),
-        Const::U128(value) => write_integer(f, value, style),
-        Const::I16(value) => write_integer(f, value, style),
-        Const::U16(value) => write_integer(f, value, style),
-        Const::I64(value) => write_integer(f, value, style),
-        Const::U64(value) => write_integer(f, value, style),
-        Const::Bool(value) => write!(f, "{}", value),
-        Const::Char(value) => write!(f, "{:?}", value),
+) -> fmt::Result {
+    match *const_ {
+        Const::I8(value) => write_integer(value, out, style),
+        Const::U8(value) => write_integer(value, out, style),
+        Const::Isize(value) => write_integer(value, out, style),
+        Const::Usize(value) => write_integer(value, out, style),
+        Const::I32(value) => write_integer(value, out, style),
+        Const::U32(value) => write_integer(value, out, style),
+        Const::I128(value) => write_integer(value, out, style),
+        Const::U128(value) => write_integer(value, out, style),
+        Const::I16(value) => write_integer(value, out, style),
+        Const::U16(value) => write_integer(value, out, style),
+        Const::I64(value) => write_integer(value, out, style),
+        Const::U64(value) => write_integer(value, out, style),
+        Const::Bool(value) => write!(out, "{}", value),
+        Const::Char(value) => write!(out, "{:?}", value),
         Const::Str(ref value) => {
             if in_value {
-                write!(f, "*{:?}", value)
+                write!(out, "*{:?}", value)
             } else {
-                write!(f, "{{*{:?}}}", value)
+                write!(out, "{{*{:?}}}", value)
             }
         }
         Const::Ref(ref value) => {
             if let Const::Str(value) = value.as_ref() {
-                write!(f, "{:?}", value)
+                write!(out, "{:?}", value)
             } else if in_value {
-                write!(f, "&{}", display_const(value, style, bound_lifetime_depth, true))
+                out.write_str("&")?;
+                write_const(value, out, style, bound_lifetime_depth, true)
             } else {
-                write!(f, "{{&{}}}", display_const(value, style, bound_lifetime_depth, true))
+                out.write_str("{&")?;
+                write_const(value, out, style, bound_lifetime_depth, true)?;
+                out.write_str("}")
             }
         }
         Const::RefMut(ref value) => {
-            let inner = display_const(value, style, bound_lifetime_depth, true);
-
             if in_value {
-                write!(f, "&mut {}", inner)
+                out.write_str("&mut ")?;
             } else {
-                write!(f, "{{&mut {}}}", inner)
+                out.write_str("{&mut ")?;
             }
+            write_const(value, out, style, bound_lifetime_depth, true)?;
+            if !in_value {
+                out.write_str("}")?;
+            }
+            Ok(())
         }
         Const::Array(ref items) => {
-            let inner = display_separated_list(
-                items
-                    .iter()
-                    .map(|item| display_const(item, style, bound_lifetime_depth, true)),
+            if in_value {
+                out.write_str("[")?;
+            } else {
+                out.write_str("{[")?;
+            }
+            write_separated_list(
+                items,
+                out,
+                |item, out| write_const(item, out, style, bound_lifetime_depth, true),
                 ", ",
-            );
+            )?;
 
             if in_value {
-                write!(f, "[{}]", inner)
+                out.write_str("]")
             } else {
-                write!(f, "{{[{}]}}", inner)
+                out.write_str("]}")
             }
         }
         Const::Tuple(ref items) => {
-            let inner = display_separated_list(
-                items
-                    .iter()
-                    .map(|item| display_const(item, style, bound_lifetime_depth, true)),
+            if in_value {
+                out.write_str("(")?;
+            } else {
+                out.write_str("{(")?;
+            }
+
+            write_separated_list(
+                items,
+                out,
+                |item, out| write_const(item, out, style, bound_lifetime_depth, true),
                 ", ",
-            );
+            )?;
 
             if in_value {
-                write!(f, "({}", inner)?;
-
-                f.write_str(if items.len() == 1 { ",)" } else { ")" })
+                out.write_str(if items.len() == 1 { ",)" } else { ")" })
             } else {
-                write!(f, "{{({}", inner)?;
-
-                f.write_str(if items.len() == 1 { ",)}" } else { ")}" })
+                out.write_str(if items.len() == 1 { ",)}" } else { ")}" })
             }
         }
         Const::NamedStruct { ref path, ref fields } => {
-            let path = display_path(path, style, bound_lifetime_depth, true);
-            let fields = display_const_fields(fields, style, bound_lifetime_depth);
-
-            if in_value {
-                write!(f, "{}{}", path, fields)
-            } else {
-                write!(f, "{{{}{}}}", path, fields)
+            if !in_value {
+                out.write_str("{")?;
             }
+            write_path(path, out, style, bound_lifetime_depth, true)?;
+            write_const_fields(fields, out, style, bound_lifetime_depth)?;
+
+            if !in_value {
+                out.write_str("}")?;
+            }
+            Ok(())
         }
-        Const::Placeholder => write!(f, "_"),
-    })
+        Const::Placeholder => out.write_str("_"),
+    }
 }
 
-fn display_const_fields<'a>(fields: &'a ConstFields, style: Style, bound_lifetime_depth: u64) -> impl Display + 'a {
-    display_fn(move |f| match fields {
+fn write_const_fields(
+    fields: &ConstFields,
+    out: &mut dyn DemangleWrite,
+    style: Style,
+    bound_lifetime_depth: u64,
+) -> fmt::Result {
+    match fields {
         ConstFields::Unit => Ok(()),
-        ConstFields::Tuple(fields) => write!(
-            f,
-            "({})",
-            display_separated_list(
-                fields
-                    .iter()
-                    .map(|field| display_const(field, style, bound_lifetime_depth, true)),
-                ", "
-            )
-        ),
+        ConstFields::Tuple(fields) => {
+            out.write_str("(")?;
+            write_separated_list(
+                fields,
+                out,
+                |field, out| write_const(field, out, style, bound_lifetime_depth, true),
+                ", ",
+            )?;
+            out.write_str(")")
+        }
         ConstFields::Struct(fields) => {
             if fields.is_empty() {
                 // Matches the behavior of `rustc-demangle`.
-                write!(f, " {{  }}")
+                out.write_str(" {  }")
             } else {
-                write!(
-                    f,
-                    " {{ {} }}",
-                    display_separated_list(
-                        fields.iter().map(|(name, value)| {
-                            display_fn(move |f| {
-                                write!(
-                                    f,
-                                    "{}: {}",
-                                    name,
-                                    display_const(value, style, bound_lifetime_depth, true)
-                                )
-                            })
-                        }),
-                        ", "
-                    )
-                )
+                out.write_str(" { ")?;
+                write_separated_list(
+                    fields.iter(),
+                    out,
+                    |(name, value), out| {
+                        write!(out, "{}", name)?;
+                        out.write_str(": ")?;
+                        write_const(value, out, style, bound_lifetime_depth, true)
+                    },
+                    ", ",
+                )?;
+                out.write_str(" }")
             }
         }
-    })
+    }
 }
 
 #[cfg(test)]
@@ -618,7 +653,7 @@ mod tests {
         #[track_caller]
         fn check(lifetime: u64, bound_lifetime_depth: u64, expected: &str) {
             assert_eq!(
-                super::display_lifetime(lifetime, bound_lifetime_depth).to_string(),
+                super::display_fn(move |f| { super::write_lifetime(lifetime, f, bound_lifetime_depth) }).to_string(),
                 expected
             );
         }
@@ -641,7 +676,8 @@ mod tests {
         #[track_caller]
         fn check(bound_lifetimes: u64, bound_lifetime_depth: u64, expected: &str) {
             assert_eq!(
-                super::display_binder(bound_lifetimes, bound_lifetime_depth).to_string(),
+                super::display_fn(move |f| { super::write_binder(bound_lifetimes, f, bound_lifetime_depth) })
+                    .to_string(),
                 expected
             );
         }

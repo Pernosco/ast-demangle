@@ -51,12 +51,15 @@ fn test_parse_abi() {
 
 #[track_caller]
 fn check_parse_const(input: &str, expected: &str) {
-    let result = display::display_const(
-        &simplify_parser(super::parse_const)(input).unwrap().0,
-        Style::Normal,
-        0,
-        false,
-    )
+    let result = display::display_fn(|f| {
+        display::write_const(
+            &simplify_parser(super::parse_const)(input).unwrap().0,
+            f,
+            Style::Normal,
+            0,
+            false,
+        )
+    })
     .to_string();
 
     assert_eq!(result, expected);
