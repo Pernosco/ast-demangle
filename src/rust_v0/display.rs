@@ -21,6 +21,8 @@ pub enum Style {
 pub enum DemangleNodeType {
     /// An identifier has been entered.
     Identifier,
+    /// The crate root has been entered.
+    CrateRoot,
     /// A namespace has been entered.
     Namespace,
     /// Additional values may be added in the future. Use a
@@ -97,7 +99,7 @@ pub fn write_path(
 ) -> fmt::Result {
     match path {
         Path::CrateRoot(identifier) => {
-            out.push_demangle_node(DemangleNodeType::Identifier);
+            out.push_demangle_node(DemangleNodeType::CrateRoot);
             match style {
                 Style::Short | Style::Normal => out.write_str(&identifier.name),
                 Style::Long => {
