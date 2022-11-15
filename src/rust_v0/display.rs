@@ -96,11 +96,16 @@ pub fn write_path(
     in_value: bool,
 ) -> fmt::Result {
     match path {
-        Path::CrateRoot(identifier) => match style {
-            Style::Short | Style::Normal => out.write_str(&identifier.name),
-            Style::Long => {
-                write!(out, "{}[{:x}]", identifier.name, identifier.disambiguator)
-            }
+        Path::CrateRoot(identifier) => {
+            out.push_demangle_node(DemangleNodeType::Identifier);
+            match style {
+                Style::Short | Style::Normal => out.write_str(&identifier.name),
+                Style::Long => {
+                    write!(out, "{}[{:x}]", identifier.name, identifier.disambiguator)
+                }
+            }?;
+            out.pop_demangle_node();
+            Ok(())
         },
         Path::InherentImpl { type_, .. } => {
             out.write_str("<")?;
