@@ -19,6 +19,8 @@ pub enum Style {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum DemangleNodeType {
+    /// An identifier has been entered.
+    Identifier,
     /// A namespace has been entered.
     Namespace,
     /// Additional values may be added in the future. Use a
@@ -122,6 +124,7 @@ pub fn write_path(
                 write_path(path, out, style, bound_lifetime_depth, in_value)?;
                 out.pop_demangle_node();
 
+                out.push_demangle_node(DemangleNodeType::Identifier);
                 out.write_str("::{")?;
 
                 match namespace {
@@ -134,7 +137,9 @@ pub fn write_path(
                     write!(out, ":{}", identifier.name)?;
                 }
 
-                write!(out, "#{}}}", identifier.disambiguator)
+                write!(out, "#{}}}", identifier.disambiguator)?;
+                out.pop_demangle_node();
+                Ok(())
             }
             b'a'..=b'z' => {
                 if matches!(style, Style::Normal | Style::Long)
@@ -150,19 +155,21 @@ pub fn write_path(
                     write_path(path, out, style, bound_lifetime_depth, in_value)?;
                     out.pop_demangle_node();
 
-                    if identifier.name.is_empty() {
-                        Ok(())
-                    } else {
-                        write!(out, "::{}", identifier.name)
+                    if !identifier.name.is_empty() {
+                        out.push_demangle_node(DemangleNodeType::Identifier);
+                        write!(out, "::{}", identifier.name)?;
+                        out.pop_demangle_node();
                     }
                 } else if identifier.name.is_empty() {
                     out.push_demangle_node(DemangleNodeType::Namespace);
                     write_path(path, out, style, bound_lifetime_depth, in_value)?;
                     out.pop_demangle_node();
-                    Ok(())
                 } else {
-                    write!(out, "{}", identifier.name)
+                    out.push_demangle_node(DemangleNodeType::Identifier);
+                    write!(out, "{}", identifier.name)?;
+                    out.pop_demangle_node();
                 }
+                Ok(())
             }
             _ => Err(fmt::Error),
         },
