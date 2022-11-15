@@ -1,7 +1,7 @@
 //! Tools for demangling symbols using
 //! [Rust v0 syntax](https://rust-lang.github.io/rfcs/2603-rust-symbol-name-mangling-v0.html#syntax-of-mangled-names).
 
-pub use self::display::DemangleWrite;
+pub use self::display::{DemangleNodeType, DemangleWrite};
 pub use self::display::Style as DisplayStyle;
 use std::borrow::Cow;
 use std::fmt::{self, Debug, Display, Formatter, Write};
