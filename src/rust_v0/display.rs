@@ -19,6 +19,8 @@ pub enum Style {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum DemangleNodeType {
+    /// A namespace has been entered.
+    Namespace,
     /// Additional values may be added in the future. Use a
     /// _ pattern for compatibility.
     __NonExhaustive,
@@ -116,7 +118,9 @@ pub fn write_path(
             identifier,
         } => match namespace {
             b'A'..=b'Z' => {
+                out.push_demangle_node(DemangleNodeType::Namespace);
                 write_path(path, out, style, bound_lifetime_depth, in_value)?;
+                out.pop_demangle_node();
 
                 out.write_str("::{")?;
 
@@ -142,7 +146,9 @@ pub fn write_path(
                             | Path::Generic { .. }
                     )
                 {
+                    out.push_demangle_node(DemangleNodeType::Namespace);
                     write_path(path, out, style, bound_lifetime_depth, in_value)?;
+                    out.pop_demangle_node();
 
                     if identifier.name.is_empty() {
                         Ok(())
@@ -150,7 +156,10 @@ pub fn write_path(
                         write!(out, "::{}", identifier.name)
                     }
                 } else if identifier.name.is_empty() {
-                    write_path(path, out, style, bound_lifetime_depth, in_value)
+                    out.push_demangle_node(DemangleNodeType::Namespace);
+                    write_path(path, out, style, bound_lifetime_depth, in_value)?;
+                    out.pop_demangle_node();
+                    Ok(())
                 } else {
                     write!(out, "{}", identifier.name)
                 }
