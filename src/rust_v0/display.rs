@@ -122,7 +122,6 @@ pub fn write_path(
             b'A'..=b'Z' => {
                 out.push_demangle_node(DemangleNodeType::Namespace);
                 write_path(path, out, style, bound_lifetime_depth, in_value)?;
-                out.pop_demangle_node();
 
                 out.push_demangle_node(DemangleNodeType::Identifier);
                 out.write_str("::{")?;
@@ -139,6 +138,7 @@ pub fn write_path(
 
                 write!(out, "#{}}}", identifier.disambiguator)?;
                 out.pop_demangle_node();
+                out.pop_demangle_node();
                 Ok(())
             }
             b'a'..=b'z' => {
@@ -153,13 +153,13 @@ pub fn write_path(
                 {
                     out.push_demangle_node(DemangleNodeType::Namespace);
                     write_path(path, out, style, bound_lifetime_depth, in_value)?;
-                    out.pop_demangle_node();
 
                     if !identifier.name.is_empty() {
                         out.push_demangle_node(DemangleNodeType::Identifier);
                         write!(out, "::{}", identifier.name)?;
                         out.pop_demangle_node();
                     }
+                    out.pop_demangle_node();
                 } else if identifier.name.is_empty() {
                     out.push_demangle_node(DemangleNodeType::Namespace);
                     write_path(path, out, style, bound_lifetime_depth, in_value)?;
