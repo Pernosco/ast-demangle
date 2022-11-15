@@ -130,8 +130,9 @@ pub fn write_path(
                 out.push_demangle_node(DemangleNodeType::Namespace);
                 write_path(path, out, style, bound_lifetime_depth, in_value)?;
 
+                out.write_str("::")?;
                 out.push_demangle_node(DemangleNodeType::Identifier);
-                out.write_str("::{")?;
+                out.write_str("{")?;
 
                 match namespace {
                     b'C' => out.write_str("closure")?,
@@ -162,8 +163,9 @@ pub fn write_path(
                     write_path(path, out, style, bound_lifetime_depth, in_value)?;
 
                     if !identifier.name.is_empty() {
+                        out.write_str("::")?;
                         out.push_demangle_node(DemangleNodeType::Identifier);
-                        write!(out, "::{}", identifier.name)?;
+                        write!(out, "{}", identifier.name)?;
                         out.pop_demangle_node();
                     }
                     out.pop_demangle_node();
