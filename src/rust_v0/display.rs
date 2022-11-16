@@ -122,11 +122,14 @@ pub fn write_path(
             Ok(())
         }
         Path::TraitImpl { type_, trait_, .. } | Path::TraitDefinition { type_, trait_ } => {
+            out.push_demangle_node(DemangleNodeType::Impl);
             out.write_str("<")?;
             write_type(type_, out, style, bound_lifetime_depth)?;
             out.write_str(" as ")?;
             write_path(trait_, out, style, bound_lifetime_depth, false)?;
-            out.write_str(">")
+            out.write_str(">")?;
+            out.pop_demangle_node();
+            Ok(())
         }
         Path::Nested {
             namespace,
