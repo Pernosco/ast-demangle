@@ -25,6 +25,8 @@ pub enum DemangleNodeType {
     CrateRoot,
     /// A namespace has been entered.
     Namespace,
+    /// A generic args block has been entered.
+    GenericArgs,
     /// Additional values may be added in the future. Use a
     /// _ pattern for compatibility.
     __NonExhaustive,
@@ -190,12 +192,14 @@ pub fn write_path(
             }
 
             out.write_str("<")?;
+            out.push_demangle_node(DemangleNodeType::GenericArgs);
             write_separated_list(
                 generic_args,
                 out,
                 |generic_arg, out| write_generic_arg(generic_arg, out, style, bound_lifetime_depth),
                 ", ",
             )?;
+            out.pop_demangle_node();
             out.write_str(">")
         }
     }
