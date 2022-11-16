@@ -27,6 +27,8 @@ pub enum DemangleNodeType {
     Namespace,
     /// A generic args block has been entered.
     GenericArgs,
+    /// A impl has been entered.
+    Impl,
     /// Additional values may be added in the future. Use a
     /// _ pattern for compatibility.
     __NonExhaustive,
@@ -112,9 +114,12 @@ pub fn write_path(
             Ok(())
         },
         Path::InherentImpl { type_, .. } => {
+            out.push_demangle_node(DemangleNodeType::Impl);
             out.write_str("<")?;
             write_type(type_, out, style, bound_lifetime_depth)?;
-            out.write_str(">")
+            out.write_str(">")?;
+            out.pop_demangle_node();
+            Ok(())
         }
         Path::TraitImpl { type_, trait_, .. } | Path::TraitDefinition { type_, trait_ } => {
             out.write_str("<")?;
