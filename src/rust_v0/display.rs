@@ -111,7 +111,6 @@ pub fn write_path(
                 }
             }?;
             out.pop_demangle_node();
-            Ok(())
         },
         Path::InherentImpl { type_, .. } => {
             out.push_demangle_node(DemangleNodeType::Impl);
@@ -119,7 +118,6 @@ pub fn write_path(
             write_type(type_, out, style, bound_lifetime_depth)?;
             out.write_str(">")?;
             out.pop_demangle_node();
-            Ok(())
         }
         Path::TraitImpl { type_, trait_, .. } | Path::TraitDefinition { type_, trait_ } => {
             out.push_demangle_node(DemangleNodeType::Impl);
@@ -129,7 +127,6 @@ pub fn write_path(
             write_path(trait_, out, style, bound_lifetime_depth, false)?;
             out.write_str(">")?;
             out.pop_demangle_node();
-            Ok(())
         }
         Path::Nested {
             namespace,
@@ -157,7 +154,6 @@ pub fn write_path(
                 write!(out, "#{}}}", identifier.disambiguator)?;
                 out.pop_demangle_node();
                 out.pop_demangle_node();
-                Ok(())
             }
             b'a'..=b'z' => {
                 if matches!(style, Style::Normal | Style::Long)
@@ -188,9 +184,8 @@ pub fn write_path(
                     write!(out, "{}", identifier.name)?;
                     out.pop_demangle_node();
                 }
-                Ok(())
             }
-            _ => Err(fmt::Error),
+            _ => return Err(fmt::Error),
         },
         Path::Generic { path, generic_args } => {
             write_path(path, out, style, bound_lifetime_depth, in_value)?;
@@ -199,18 +194,19 @@ pub fn write_path(
                 out.write_str("::")?;
             }
 
-            out.write_str("<")?;
             out.push_demangle_node(DemangleNodeType::GenericArgs);
+            out.write_str("<")?;
             write_separated_list(
                 generic_args,
                 out,
                 |generic_arg, out| write_generic_arg(generic_arg, out, style, bound_lifetime_depth),
                 ", ",
             )?;
+            out.write_str(">")?;
             out.pop_demangle_node();
-            out.write_str(">")
         }
     }
+    Ok(())
 }
 
 fn write_lifetime(lifetime: u64, out: &mut dyn DemangleWrite, bound_lifetime_depth: u64) -> fmt::Result {
